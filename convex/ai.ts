@@ -586,45 +586,51 @@ export const generateStreamingResponse: any = action({
       }) as any);
 
       let accumulatedContent = "";
-      let toolCalls: any[] = [];
+      const toolCalls: any[] = [];
 
-      // Process the stream
-      for await (const delta of result.textStream) {
-        accumulatedContent += delta;
+      // Process the full stream so we can detect tool calls in real time
+      for await (const part of result.fullStream) {
+        // Text deltas
+        if (part.type === "text-delta") {
+          accumulatedContent += part.textDelta;
 
-        // Update the message with accumulated content
-        await ctx.runMutation(api.messages.update, {
-          messageId,
-          content: accumulatedContent,
-        });
+          // Update message content incrementally
+          await ctx.runMutation(api.messages.update, {
+            messageId,
+            content: accumulatedContent,
+          });
+        }
 
-        // Small delay to make streaming visible
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        // Tool calls emitted by the model
+        if (part.type === "tool-call") {
+          toolCalls.push({
+            id: part.toolCallId || `tool_${Date.now()}`,
+            name: part.toolName,
+            arguments: JSON.stringify(part.args),
+            result: undefined,
+          });
+
+          // Persist tool call immediately for UI feedback
+          await ctx.runMutation(api.messages.update, {
+            messageId,
+            content: accumulatedContent,
+            toolCalls,
+          });
+        }
+
+        // Brief pause so UI shows streaming smoothly
+        await new Promise((r) => setTimeout(r, 20));
       }
 
-      // Handle tool calls if any
-      if (result.toolCalls && result.toolCalls.length > 0) {
-        toolCalls = result.toolCalls.map((call: any) => ({
-          id: call.toolCallId || `tool_${Date.now()}`,
-          name: call.toolName,
-          arguments: JSON.stringify(call.args),
-          result: undefined,
-        }));
-      }
-
-      // Final update to ensure the message is complete with tool calls
+      // Final update to ensure the message is complete and includes any tool calls
       await ctx.runMutation(api.messages.update, {
         messageId,
         content:
           accumulatedContent ||
           "I apologize, but I couldn't generate a response.",
+        // Persist toolCalls so the UI can render which tools were used
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       });
-
-      // If there are tool calls, we need to update the message with them
-      if (toolCalls.length > 0) {
-        // For now, we'll add the tool calls to the existing message
-        // In a more sophisticated implementation, we might handle tool execution here
-      }
 
       // Update usage if using built-in keys
       if (!usingUserKey) {

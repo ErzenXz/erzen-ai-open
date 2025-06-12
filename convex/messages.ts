@@ -87,6 +87,16 @@ export const update = mutation({
   args: {
     messageId: v.id("messages"),
     content: v.string(),
+    toolCalls: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          name: v.string(),
+          arguments: v.string(),
+          result: v.optional(v.string()),
+        })
+      )
+    ),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -105,8 +115,9 @@ export const update = mutation({
       throw new Error("Not authorized to update this message");
     }
 
-    await ctx.db.patch(args.messageId, {
-      content: args.content,
-    });
+    const update: any = { content: args.content };
+    if (args.toolCalls) update.toolCalls = args.toolCalls;
+
+    await ctx.db.patch(args.messageId, update);
   },
 });
