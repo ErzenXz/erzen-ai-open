@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { Id } from "../../convex/_generated/dataModel";
@@ -6,7 +6,7 @@ import { Sidebar } from "./Sidebar";
 import { ChatArea } from "./ChatArea";
 import { MessageInput } from "./MessageInput";
 import { SettingsModal } from "./SettingsModal";
-import { Menu, Settings } from "lucide-react";
+import { Menu, Settings, Sparkles } from 'lucide-react';
 import { SignOutButton } from "../SignOutButton";
 
 export function ChatInterface() {
@@ -24,6 +24,7 @@ export function ChatInterface() {
   const createConversation = useMutation(api.conversations.create);
   const addMessage = useMutation(api.messages.add);
   const generateResponse = useAction(api.ai.generateResponse);
+  const generateStreamingResponse = useAction(api.ai.generateStreamingResponse);
   const preferences = useQuery(api.preferences.get);
 
   // Auto-select first conversation or create one
@@ -71,7 +72,7 @@ export function ChatInterface() {
         role: msg.role,
         content: msg.content,
       }));
-      
+
       messageHistory.push({ role: "user" as const, content });
 
       // Use selected model or fall back to preferences
@@ -79,26 +80,38 @@ export function ChatInterface() {
       const model = selectedModel?.model || preferences?.model;
       const toolsToUse = enabledTools || preferences?.enabledTools || [];
 
-      await generateResponse({
-        conversationId,
-        messages: messageHistory,
-        provider: provider as any,
-        model,
-        temperature: preferences?.temperature,
-        maxTokens: preferences?.maxTokens,
-        enabledTools: toolsToUse,
-      });
+      // Use streaming only when no tools are enabled, otherwise use regular generation
+      if (toolsToUse.length === 0) {
+        await generateStreamingResponse({
+          conversationId,
+          messages: messageHistory,
+          provider: provider as any,
+          model,
+          temperature: preferences?.temperature,
+          maxTokens: preferences?.maxTokens,
+          enabledTools: toolsToUse,
+        });
+      } else {
+        await generateResponse({
+          conversationId,
+          messages: messageHistory,
+          provider: provider as any,
+          model,
+          temperature: preferences?.temperature,
+          maxTokens: preferences?.maxTokens,
+          enabledTools: toolsToUse,
+        });
+      }
     } catch (error) {
       console.error("Failed to generate response:", error);
-      // The error message will already be saved as an assistant message by the AI action
     } finally {
       setIsGenerating(false);
     }
   };
 
   return (
-    <div className="flex h-screen bg-gray-50">
-      {/* Sidebar */}
+    <div className="flex h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
+      {/* Enhanced Sidebar */}
       <div className={`${sidebarOpen ? 'w-80' : 'w-0'} transition-all duration-300 overflow-hidden`}>
         <Sidebar
           conversations={conversations}
@@ -110,41 +123,48 @@ export function ChatInterface() {
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col">
-        {/* Header */}
-        <header className="bg-white border-b px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        {/* Enhanced Header */}
+        <header className="bg-white/80 backdrop-blur-xl border-b border-slate-200/50 px-6 py-4 flex items-center justify-between shadow-sm">
+          <div className="flex items-center gap-4">
             <button
               onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              className="p-2 hover:bg-slate-100 rounded-xl transition-colors"
             >
-              <Menu size={20} />
+              <Menu size={20} className="text-slate-600" />
             </button>
-            <h1 className="text-lg font-semibold">AI Chatbot</h1>
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
+                <Sparkles size={16} className="text-white" />
+              </div>
+              <h1 className="text-xl font-semibold bg-gradient-to-r from-slate-800 to-slate-600 bg-clip-text text-transparent">
+                ErzenAI
+              </h1>
+            </div>
           </div>
           
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <button
               onClick={() => setSettingsOpen(true)}
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              className="p-2 hover:bg-slate-100 rounded-xl transition-colors group"
             >
-              <Settings size={20} />
+              <Settings size={20} className="text-slate-600 group-hover:rotate-90 transition-transform duration-200" />
             </button>
             <SignOutButton />
           </div>
         </header>
 
         {/* Chat Messages */}
-        <div className="flex-1 overflow-hidden">
-          <ChatArea 
-            messages={messages} 
+        <div className="flex-1 min-h-0">
+          <ChatArea
+            messages={messages}
             isGenerating={isGenerating}
             conversationId={currentConversationId}
           />
         </div>
 
-        {/* Message Input */}
-        <div className="border-t bg-white p-4">
-          <MessageInput 
+        {/* Enhanced Message Input */}
+        <div className="border-t border-slate-200/50 bg-white/80 backdrop-blur-xl p-6">
+          <MessageInput
             onSendMessage={handleSendMessage}
             disabled={isGenerating}
           />

@@ -1,11 +1,23 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
-import { X, Eye, EyeOff, Key, Trash2, Zap, Infinity } from "lucide-react";
+import { X, Eye, EyeOff, Key, Trash2, Zap, Infinity as InfinityIcon } from "lucide-react";
+
+interface UserPreferences {
+  aiProvider: "openai" | "anthropic" | "google" | "openrouter" | "groq" | "deepseek" | "grok" | "cohere" | "mistral";
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  enabledTools?: string[];
+  favoriteModels?: Array<{
+    provider: string;
+    model: string;
+  }>;
+}
 
 interface SettingsModalProps {
   onClose: () => void;
-  preferences: any;
+  preferences: UserPreferences | null;
 }
 
 const PROVIDER_CONFIGS = {
@@ -162,11 +174,13 @@ const PROVIDER_CONFIGS = {
 
 export function SettingsModal({ onClose, preferences }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<"preferences" | "apikeys" | "usage">("preferences");
-  const [settings, setSettings] = useState({
-    aiProvider: "openai" as "openai" | "anthropic" | "google" | "openrouter" | "groq" | "deepseek" | "grok" | "cohere" | "mistral",
+  const [settings, setSettings] = useState<UserPreferences>({
+    aiProvider: "openai",
     model: "gpt-4o-mini",
     temperature: 0.7,
     maxTokens: 1000,
+    enabledTools: ["web_search", "calculator", "datetime"],
+    favoriteModels: [],
   });
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
@@ -180,7 +194,15 @@ export function SettingsModal({ onClose, preferences }: SettingsModalProps) {
 
   useEffect(() => {
     if (preferences) {
-      setSettings(preferences);
+      // Only extract the valid preference fields, excluding Convex-generated fields
+      setSettings({
+        aiProvider: preferences.aiProvider,
+        model: preferences.model,
+        temperature: preferences.temperature,
+        maxTokens: preferences.maxTokens,
+        enabledTools: preferences.enabledTools,
+        favoriteModels: preferences.favoriteModels,
+      });
     }
   }, [preferences]);
 
@@ -355,7 +377,7 @@ export function SettingsModal({ onClose, preferences }: SettingsModalProps) {
                     <h3 className="font-medium text-blue-900 mb-1">Built-in API Keys vs Your Own</h3>
                     <div className="text-sm text-blue-800 space-y-1">
                       <p><strong>Built-in Keys:</strong> Free usage with monthly limits (messages & searches count)</p>
-                      <p><strong>Your Keys:</strong> <Infinity className="inline w-4 h-4" /> Unlimited usage - no limits or counting!</p>
+                      <p><strong>Your Keys:</strong> <InfinityIcon className="inline w-4 h-4" /> Unlimited usage - no limits or counting!</p>
                     </div>
                   </div>
                 </div>
@@ -371,7 +393,7 @@ export function SettingsModal({ onClose, preferences }: SettingsModalProps) {
                     <div className="flex items-center gap-2">
                       {hasApiKey(provider) && (
                         <span className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded-full flex items-center gap-1">
-                          <Infinity size={12} />
+                          <InfinityIcon size={12} />
                           Unlimited
                         </span>
                       )}
@@ -402,7 +424,7 @@ export function SettingsModal({ onClose, preferences }: SettingsModalProps) {
                       </button>
                     </div>
                     <button
-                      onClick={() => handleSaveApiKey(provider as keyof typeof PROVIDER_CONFIGS)}
+                      onClick={() => void handleSaveApiKey(provider as keyof typeof PROVIDER_CONFIGS)}
                       disabled={!apiKeys[provider]?.trim()}
                       className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                     >
@@ -411,7 +433,7 @@ export function SettingsModal({ onClose, preferences }: SettingsModalProps) {
                     </button>
                     {hasApiKey(provider) && (
                       <button
-                        onClick={() => handleRemoveApiKey(provider as keyof typeof PROVIDER_CONFIGS)}
+                        onClick={() => void handleRemoveApiKey(provider as keyof typeof PROVIDER_CONFIGS)}
                         className="px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2"
                       >
                         <Trash2 size={16} />
@@ -533,7 +555,7 @@ export function SettingsModal({ onClose, preferences }: SettingsModalProps) {
 
               <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                 <div className="flex items-start gap-3">
-                  <Infinity className="text-green-600 mt-1" size={20} />
+                  <InfinityIcon className="text-green-600 mt-1" size={20} />
                   <div>
                     <h4 className="font-medium text-green-900 mb-1">Pro Tip: Unlimited Usage</h4>
                     <p className="text-sm text-green-800">
@@ -556,9 +578,10 @@ export function SettingsModal({ onClose, preferences }: SettingsModalProps) {
           </button>
           {activeTab === "preferences" && (
             <button
-              onClick={async () => {
-                await handleSavePreferences();
-                onClose();
+              onClick={() => {
+                void handleSavePreferences().then(() => {
+                  onClose();
+                });
               }}
               className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >

@@ -5,7 +5,7 @@ import { v } from "convex/values";
 import { openai } from "@ai-sdk/openai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { google } from "@ai-sdk/google";
-import { generateText, tool } from "ai";
+import { generateText, streamText, tool } from "ai";
 import { z } from "zod";
 import { api } from "./_generated/api";
 
@@ -264,7 +264,7 @@ Visibility: ${weather.visibility / 1000} km`;
   }
 }
 
-export const generateResponse = action({
+export const generateStreamingResponse: any = action({
   args: {
     conversationId: v.id("conversations"),
     messages: v.array(
@@ -295,11 +295,11 @@ export const generateResponse = action({
     maxTokens: v.optional(v.number()),
     enabledTools: v.optional(v.array(v.string())),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<any> => {
     const provider = args.provider || "openai";
     const model = args.model || PROVIDER_CONFIGS[provider].models[0];
-    const temperature = args.temperature || 0.7;
-    const maxTokens = args.maxTokens || 1000;
+    const temperature = args.temperature ?? 1;
+    const maxTokens = args.maxTokens ?? 1_000_000;
     const enabledTools = args.enabledTools || [];
 
     // Get user's API key for the provider
@@ -508,7 +508,396 @@ export const generateResponse = action({
           try {
             const result = eval(expression.replace(/[^0-9+\-*/().\s]/g, ""));
             return `Result: ${result}`;
+          } catch {
+            return `Error: Invalid mathematical expression`;
+          }
+        },
+      });
+    }
+
+    // Validate API key is available
+    if (!apiKey) {
+      throw new Error(
+        `No API key available for ${provider}. Please configure your API key in settings or use a provider with built-in support.`
+      );
+    }
+
+    // Create AI model instance
+    if (
+      provider === "openai" ||
+      provider === "openrouter" ||
+      provider === "groq" ||
+      provider === "deepseek" ||
+      provider === "grok" ||
+      provider === "mistral"
+    ) {
+      aiModel = openai(
+        model as any,
+        {
+          baseURL,
+          apiKey,
+        } as any
+      );
+    } else if (provider === "anthropic") {
+      aiModel = anthropic(
+        model as any,
+        {
+          apiKey,
+        } as any
+      );
+    } else if (provider === "google") {
+      aiModel = google(
+        model as any,
+        {
+          apiKey,
+        } as any
+      );
+    } else if (provider === "cohere") {
+      // For Cohere, we'll use OpenAI-compatible format
+      aiModel = openai(
+        model as any,
+        {
+          baseURL,
+          apiKey,
+        } as any
+      );
+    } else {
+      // This branch should theoretically never be hit because we've accounted for all providers,
+      // but it provides an extra safeguard at runtime.
+      throw new Error("Unsupported provider");
+    }
+
+    try {
+      // Create an empty assistant message first
+      const messageId: any = await ctx.runMutation(api.messages.add, {
+        conversationId: args.conversationId,
+        role: "assistant",
+        content: "",
+      });
+
+      // Generate the response using streamText
+      const result = await (streamText({
+        model: aiModel,
+        messages: args.messages,
+        tools: availableTools,
+        temperature,
+        maxTokens,
+        maxSteps: 5,
+      }) as any);
+
+      let accumulatedContent = "";
+      let toolCalls: any[] = [];
+
+      // Process the stream
+      for await (const delta of result.textStream) {
+        accumulatedContent += delta;
+
+        // Update the message with accumulated content
+        await ctx.runMutation(api.messages.update, {
+          messageId,
+          content: accumulatedContent,
+        });
+
+        // Small delay to make streaming visible
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      // Handle tool calls if any
+      if (result.toolCalls && result.toolCalls.length > 0) {
+        toolCalls = result.toolCalls.map((call: any) => ({
+          id: call.toolCallId || `tool_${Date.now()}`,
+          name: call.toolName,
+          arguments: JSON.stringify(call.args),
+          result: undefined,
+        }));
+      }
+
+      // Final update to ensure the message is complete with tool calls
+      await ctx.runMutation(api.messages.update, {
+        messageId,
+        content:
+          accumulatedContent ||
+          "I apologize, but I couldn't generate a response.",
+      });
+
+      // If there are tool calls, we need to update the message with them
+      if (toolCalls.length > 0) {
+        // For now, we'll add the tool calls to the existing message
+        // In a more sophisticated implementation, we might handle tool execution here
+      }
+
+      // Update usage if using built-in keys
+      if (!usingUserKey) {
+        await ctx.runMutation(api.usage.incrementMessages);
+      }
+
+      return {
+        messageId,
+        content: accumulatedContent,
+        usingUserKey,
+      };
+    } catch (error) {
+      console.error("Streaming AI generation error:", error);
+
+      // Save error message as assistant response
+      await ctx.runMutation(api.messages.add, {
+        conversationId: args.conversationId,
+        role: "assistant",
+        content: `I apologize, but I encountered an error: ${error instanceof Error ? error.message : "Unknown error"}. ${!usingUserKey ? "Consider adding your own API keys in settings for unlimited usage." : ""}`,
+      });
+
+      throw new Error(
+        `Failed to generate streaming AI response: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+    }
+  },
+});
+
+export const generateResponse = action({
+  args: {
+    conversationId: v.id("conversations"),
+    messages: v.array(
+      v.object({
+        role: v.union(
+          v.literal("user"),
+          v.literal("assistant"),
+          v.literal("system")
+        ),
+        content: v.string(),
+      })
+    ),
+    provider: v.optional(
+      v.union(
+        v.literal("openai"),
+        v.literal("anthropic"),
+        v.literal("google"),
+        v.literal("openrouter"),
+        v.literal("groq"),
+        v.literal("deepseek"),
+        v.literal("grok"),
+        v.literal("cohere"),
+        v.literal("mistral")
+      )
+    ),
+    model: v.optional(v.string()),
+    temperature: v.optional(v.number()),
+    maxTokens: v.optional(v.number()),
+    enabledTools: v.optional(v.array(v.string())),
+  },
+  handler: async (ctx, args) => {
+    const provider = args.provider || "openai";
+    const model = args.model || PROVIDER_CONFIGS[provider].models[0];
+    const temperature = args.temperature ?? 1;
+    const maxTokens = args.maxTokens ?? 1_000_000;
+    const enabledTools = args.enabledTools || [];
+
+    // Get user's API key for the provider
+    const apiKeyRecord = await ctx.runQuery(api.apiKeys.getByProvider, {
+      provider,
+    });
+
+    let aiModel;
+    let apiKey = "";
+    let baseURL = "";
+    let usingUserKey = false;
+
+    // Determine which API key to use
+    if (apiKeyRecord?.apiKey) {
+      // User has their own API key
+      apiKey = apiKeyRecord.apiKey;
+      baseURL = PROVIDER_CONFIGS[provider].baseUrl;
+      usingUserKey = true;
+    } else {
+      // Use built-in keys
+      if (provider === "openai") {
+        apiKey =
+          process.env.CONVEX_OPENAI_API_KEY || process.env.OPENAI_API_KEY || "";
+        baseURL = process.env.CONVEX_OPENAI_BASE_URL || "";
+      } else if (provider === "google") {
+        apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY || "";
+      } else if (provider === "anthropic") {
+        apiKey = process.env.ANTHROPIC_API_KEY || "";
+      } else if (provider === "openrouter") {
+        apiKey = process.env.OPENROUTER_API_KEY || "";
+        baseURL = PROVIDER_CONFIGS[provider].baseUrl;
+      } else if (provider === "groq") {
+        apiKey = process.env.GROQ_API_KEY || "";
+        baseURL = PROVIDER_CONFIGS[provider].baseUrl;
+      } else if (provider === "deepseek") {
+        apiKey = process.env.DEEPSEEK_API_KEY || "";
+        baseURL = PROVIDER_CONFIGS[provider].baseUrl;
+      } else if (provider === "grok") {
+        apiKey = process.env.GROK_API_KEY || "";
+        baseURL = PROVIDER_CONFIGS[provider].baseUrl;
+      } else if (provider === "cohere") {
+        apiKey = process.env.COHERE_API_KEY || "";
+        baseURL = PROVIDER_CONFIGS[provider].baseUrl;
+      } else if (provider === "mistral") {
+        apiKey = process.env.MISTRAL_API_KEY || "";
+        baseURL = PROVIDER_CONFIGS[provider].baseUrl;
+      }
+    }
+
+    // Only check usage limits if using built-in keys
+    if (!usingUserKey) {
+      const usage = await ctx.runQuery(api.usage.get);
+      const limits = await ctx.runQuery(api.usage.getLimits);
+
+      if (usage && usage.messagesUsed >= limits.messages) {
+        throw new Error(
+          `Monthly message limit reached (${limits.messages}). Add your own API keys in settings for unlimited usage.`
+        );
+      }
+    }
+
+    // Create tools based on enabled tools
+    const availableTools: Record<string, any> = {};
+
+    if (enabledTools.includes("web_search")) {
+      availableTools.web_search = tool({
+        description: "Search the web for current information",
+        parameters: z.object({
+          query: z.string().describe("The search query"),
+        }),
+        execute: async ({ query }): Promise<string> => {
+          return await performTavilySearch(ctx, query, "basic", !usingUserKey);
+        },
+      });
+    }
+
+    if (enabledTools.includes("deep_search")) {
+      availableTools.deep_search = tool({
+        description:
+          "Perform a comprehensive deep search with multiple queries for thorough research (uses 3x message pricing)",
+        parameters: z.object({
+          query: z.string().describe("The main search query"),
+          related_queries: z
+            .array(z.string())
+            .optional()
+            .describe("Additional related queries to search"),
+        }),
+        execute: async ({ query, related_queries = [] }): Promise<string> => {
+          // Only increment usage if using built-in keys
+          if (!usingUserKey) {
+            // Increment usage 3 times for deep search
+            await ctx.runMutation(api.usage.incrementMessages);
+            await ctx.runMutation(api.usage.incrementMessages);
+          }
+
+          const allQueries = [query, ...related_queries.slice(0, 3)]; // Limit to 4 total queries
+          const searchPromises = allQueries.map((q) =>
+            performTavilySearch(ctx, q, "advanced", !usingUserKey)
+          );
+          const results = await Promise.all(searchPromises);
+
+          let combinedResults = `Deep search results for "${query}":\n\n`;
+          results.forEach((result, index) => {
+            combinedResults += `=== Results for "${allQueries[index]}" ===\n${result}\n\n`;
+          });
+
+          return combinedResults;
+        },
+      });
+    }
+
+    if (enabledTools.includes("weather")) {
+      availableTools.weather = tool({
+        description: "Get current weather information for a specific location",
+        parameters: z.object({
+          location: z
+            .string()
+            .describe("The city, state/country for weather information"),
+        }),
+        execute: async ({ location }): Promise<string> => {
+          return await getWeatherData(ctx, location);
+        },
+      });
+    }
+
+    if (enabledTools.includes("datetime")) {
+      availableTools.datetime = tool({
+        description: "Get current date, time, and timezone information",
+        parameters: z.object({
+          timezone: z
+            .string()
+            .optional()
+            .describe(
+              "Specific timezone (e.g., 'America/New_York', 'Europe/London')"
+            ),
+          format: z
+            .enum(["full", "date", "time"])
+            .optional()
+            .describe("Format type - full, date only, or time only"),
+        }),
+        execute: async ({ timezone, format = "full" }): Promise<string> => {
+          try {
+            const now = new Date();
+            let dateTime;
+
+            if (timezone) {
+              dateTime = new Intl.DateTimeFormat("en-US", {
+                timeZone: timezone,
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+                timeZoneName: "short",
+                weekday: "long",
+              }).format(now);
+            } else {
+              dateTime = now.toLocaleString("en-US", {
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+                timeZoneName: "short",
+                weekday: "long",
+              });
+            }
+
+            if (format === "date") {
+              return `Current date: ${now.toLocaleDateString("en-US", {
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+                weekday: "long",
+                ...(timezone && { timeZone: timezone }),
+              })}`;
+            } else if (format === "time") {
+              return `Current time: ${now.toLocaleTimeString("en-US", {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+                timeZoneName: "short",
+                ...(timezone && { timeZone: timezone }),
+              })}`;
+            }
+
+            return `Current date and time: ${dateTime}`;
           } catch (error) {
+            return `Error getting date/time: ${error instanceof Error ? error.message : "Unknown error"}`;
+          }
+        },
+      });
+    }
+
+    if (enabledTools.includes("calculator")) {
+      availableTools.calculator = tool({
+        description: "Perform mathematical calculations",
+        parameters: z.object({
+          expression: z
+            .string()
+            .describe("The mathematical expression to evaluate"),
+        }),
+        execute: async ({ expression }): Promise<string> => {
+          try {
+            const result = eval(expression.replace(/[^0-9+\-*/().\s]/g, ""));
+            return `Result: ${result}`;
+          } catch {
             return `Error: Invalid mathematical expression`;
           }
         },
@@ -562,7 +951,9 @@ export const generateResponse = action({
           } as any
         );
       } else {
-        throw new Error(`Unsupported provider: ${provider}`);
+        // This branch should theoretically never be hit because we've accounted for all providers,
+        // but it provides an extra safeguard at runtime.
+        throw new Error("Unsupported provider");
       }
 
       const result = await generateText({
@@ -571,6 +962,7 @@ export const generateResponse = action({
         tools: availableTools,
         temperature,
         maxTokens,
+        maxSteps: 5,
       });
 
       // Only update usage if using built-in keys

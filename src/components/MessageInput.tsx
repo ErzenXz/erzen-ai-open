@@ -202,7 +202,18 @@ export function MessageInput({ onSendMessage, disabled }: MessageInputProps) {
   // Check if tool is available (has required API key or doesn't need one)
   const isToolAvailable = (tool: typeof AVAILABLE_TOOLS[0]) => {
     if (!tool.requiresApiKey) return true;
-    return userApiKeys.some(key => key.provider === tool.requiresApiKey && key.hasKey);
+
+    // Check if user has their own API key
+    const hasUserApiKey = userApiKeys.some(key => key.provider === tool.requiresApiKey && key.hasKey);
+    if (hasUserApiKey) return true;
+
+    // For tools that have built-in support, they're always available
+    // These tools will use built-in API keys when user doesn't have their own
+    if (tool.requiresApiKey === "tavily" || tool.requiresApiKey === "openweather") {
+      return true; // Built-in support available
+    }
+
+    return false;
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -245,7 +256,7 @@ export function MessageInput({ onSendMessage, disabled }: MessageInputProps) {
     setSelectedProvider(provider);
     setSelectedModel(model);
 
-    // Save to preferences
+    // Save to preferences - only pass valid fields, excluding Convex-generated fields
     if (preferences) {
       await updatePreferences({
         aiProvider: provider,
@@ -258,12 +269,24 @@ export function MessageInput({ onSendMessage, disabled }: MessageInputProps) {
     }
   };
 
-  const toggleTool = (toolId: string) => {
-    setEnabledTools(prev => 
-      prev.includes(toolId) 
-        ? prev.filter(id => id !== toolId)
-        : [...prev, toolId]
-    );
+  const toggleTool = async (toolId: string) => {
+    const newEnabledTools = enabledTools.includes(toolId)
+      ? enabledTools.filter(id => id !== toolId)
+      : [...enabledTools, toolId];
+
+    setEnabledTools(newEnabledTools);
+
+    // Save to preferences - only pass valid fields, excluding Convex-generated fields
+    if (preferences) {
+      await updatePreferences({
+        aiProvider: preferences.aiProvider,
+        model: preferences.model,
+        temperature: preferences.temperature,
+        maxTokens: preferences.maxTokens,
+        enabledTools: newEnabledTools,
+        favoriteModels: preferences.favoriteModels,
+      });
+    }
   };
 
   // Close dropdowns when clicking outside
@@ -347,15 +370,14 @@ export function MessageInput({ onSendMessage, disabled }: MessageInputProps) {
                 const IconComponent = tool.icon;
                 const isAvailable = isToolAvailable(tool);
                 const isEnabled = enabledTools.includes(tool.id);
-                
+                const hasUserApiKey = tool.requiresApiKey ? userApiKeys.some(key => key.provider === tool.requiresApiKey && key.hasKey) : false;
+                const hasBuiltInSupport = tool.requiresApiKey === "tavily" || tool.requiresApiKey === "openweather";
+
                 return (
                   <div key={tool.id} className="border-b border-gray-100 last:border-b-0">
                     <button
-                      onClick={() => isAvailable && toggleTool(tool.id)}
-                      disabled={!isAvailable}
-                      className={`w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors ${
-                        !isAvailable ? 'opacity-50 cursor-not-allowed' : ''
-                      }`}
+                      onClick={() => void toggleTool(tool.id)}
+                      className="w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors"
                     >
                       <div className="flex items-center gap-3">
                         <div className={`p-2 rounded-lg ${
@@ -371,17 +393,22 @@ export function MessageInput({ onSendMessage, disabled }: MessageInputProps) {
                                 3x Cost
                               </span>
                             )}
-                            {tool.requiresApiKey && !isAvailable && (
-                              <span className="px-2 py-0.5 bg-red-100 text-red-800 text-xs rounded-full">
-                                API Key Required
+                            {tool.requiresApiKey && hasUserApiKey && (
+                              <span className="px-2 py-0.5 bg-green-100 text-green-800 text-xs rounded-full">
+                                Your API Key
+                              </span>
+                            )}
+                            {tool.requiresApiKey && !hasUserApiKey && hasBuiltInSupport && (
+                              <span className="px-2 py-0.5 bg-blue-100 text-blue-800 text-xs rounded-full">
+                                Built-in
                               </span>
                             )}
                           </div>
                           <p className="text-xs text-gray-600 mt-1">{tool.description}</p>
                         </div>
                         <div className={`w-4 h-4 rounded border-2 flex items-center justify-center ${
-                          isEnabled 
-                            ? 'bg-blue-600 border-blue-600' 
+                          isEnabled
+                            ? 'bg-blue-600 border-blue-600'
                             : 'border-gray-300'
                         }`}>
                           {isEnabled && (
@@ -397,7 +424,17 @@ export function MessageInput({ onSendMessage, disabled }: MessageInputProps) {
               })}
               
               <div className="p-3 text-xs text-gray-500 text-center border-t border-gray-100">
-                Configure API keys in settings for more tools
+                <div className="flex items-center justify-center gap-4">
+                  <span className="flex items-center gap-1">
+                    <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
+                    Built-in support
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                    Your API key
+                  </span>
+                </div>
+                <div className="mt-1">Configure API keys in settings for unlimited usage</div>
               </div>
             </div>
           )}
